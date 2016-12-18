@@ -1,9 +1,32 @@
+class NumpyRequirement < Requirement
+  satisfy do
+    begin
+      system "python",
+             "-c", "import numpy; " \
+                   "import sys; " \
+                   "from distutils.version import LooseVersion; " \
+                   "np_version = LooseVersion(numpy.__version__); " \
+                   "req_version = LooseVersion('1.1.0'); " \
+                   "sys.exit(0 if np_version >= req_version else 1)"
+    rescue
+      false
+    end
+  end
+
+  def message
+    "Numpy >= 1.1.0 is required. MacOS has older version preinstalled which " \
+    "has prioritizied position in `os.path`, so you have to install newer " \
+    "numpy manually. Gnuradio may still work with older numpy, depending on " \
+    "use cases."
+  end
+end
+
 class Gnuradio < Formula
   desc "SDK providing the signal processing runtime and processing blocks"
-  homepage "https://gnuradio.squarespace.com/"
-  url "https://gnuradio.org/releases/gnuradio/gnuradio-3.7.9.1.tar.gz"
-  sha256 "9c06f0f1ec14113203e0486fd526dd46ecef216dfe42f12d78d9b781b1ef967e"
-  revision 2
+  homepage "http://gnuradio.org/"
+  url "https://gnuradio.org/releases/gnuradio/gnuradio-3.7.10.1.tar.gz"
+  sha256 "63d7b65cc4abe22f47b8f41caaf7370a0a502b91e36e29901ba03e8838ab4937"
+  head "https://github.com/gnuradio/gnuradio.git"
 
   bottle do
     sha256 "7f2b54d889d4d568736e9ae8221b0a652015d6abb18b1466a5637f92a007884f" => :sierra
@@ -11,36 +34,37 @@ class Gnuradio < Formula
     sha256 "464555aaac52b55b9e09ec2b0b2e0e4cabc024b655a1bf815d7ddde59aec92fe" => :yosemite
   end
 
+  # Fixes linkage of python (swig) bindings directly to python
+  # https://github.com/gnuradio/gnuradio/pull/1146
+  patch do
+    url "https://github.com/gnuradio/gnuradio/pull/1146.patch"
+    sha256 "fbf9842292cc1c2cfcf708d648d01c9a42fb98c5bba542a272dcdac504454d26"
+  end
+
   option :universal
 
   depends_on "pkg-config" => :build
 
-  depends_on :python if MacOS.version <= :snow_leopard
+  depends_on :python => :optional
+  depends_on NumpyRequirement if build.with? :python
   depends_on "boost"
   depends_on "cppunit"
   depends_on "fftw"
   depends_on "gsl"
   depends_on "zeromq"
+  depends_on "swig" => :build if build.with? :python
+  depends_on "cmake" => :build
 
   # For documentation
-  depends_on "doxygen" => :build
-  depends_on "sphinx-doc" => :build
+  depends_on "doxygen" => [:build, :optional]
+  depends_on "sphinx-doc" => [:build, :optional]
 
   depends_on "uhd" => :recommended
-  depends_on "sdl" => :recommended
-  depends_on "jack" => :recommended
+  depends_on "sdl" => :optional
+  depends_on "jack" => :optional
   depends_on "portaudio" => :recommended
-
-  # gnuradio is known not to compile against CMake >3.3.2 currently.
-  resource "cmake" do
-    url "https://cmake.org/files/v3.3/cmake-3.3.2.tar.gz"
-    sha256 "e75a178d6ebf182b048ebfe6e0657c49f0dc109779170bad7ffcb17463f2fc22"
-  end
-
-  resource "numpy" do
-    url "https://pypi.python.org/packages/source/n/numpy/numpy-1.10.1.tar.gz"
-    sha256 "8b9f453f29ce96a14e625100d3dcf8926301d36c5f622623bf8820e748510858"
-  end
+  depends_on "pygtk" => :optional
+  depends_on "wxpython" => :optional
 
   # cheetah starts here
   resource "Markdown" do
@@ -68,33 +92,7 @@ class Gnuradio < Formula
     ENV["CHEETAH_INSTALL_WITHOUT_SETUPTOOLS"] = "1"
     ENV.prepend_create_path "PYTHONPATH", libexec/"vendor/lib/python2.7/site-packages"
 
-    resource("cmake").stage do
-      args = %W[
-        --prefix=#{buildpath}/cmake
-        --no-system-libs
-        --parallel=#{ENV.make_jobs}
-        --datadir=/share/cmake
-        --docdir=/share/doc/cmake
-        --mandir=/share/man
-        --system-zlib
-        --system-bzip2
-      ]
-
-      # https://github.com/Homebrew/homebrew/issues/45989
-      if MacOS.version <= :lion
-        args << "--no-system-curl"
-      else
-        args << "--system-curl"
-      end
-
-      system "./bootstrap", *args
-      system "make"
-      system "make", "install"
-    end
-
-    ENV.prepend_path "PATH", buildpath/"cmake/bin"
-
-    res = %w[Markdown Cheetah lxml numpy]
+    res = %w[Markdown Cheetah lxml]
     res.each do |r|
       resource(r).stage do
         system "python", *Language::Python.setup_install_args(libexec/"vendor")
@@ -115,10 +113,17 @@ class Gnuradio < Formula
                             gr-blocks testing gr-pager gr-noaa gr-channels
                             gr-audio gr-fcd gr-vocoder gr-fec gr-digital
                             gr-dtv gr-atsc gr-trellis gr-zeromq]
+    if build.with? "python"
+      enabled_components << "python"
+      enabled_components << "gr-utils"
+      enabled_components << "grc" if build.with? "pygtk"
+      enabled_components << "gr-wxgui" if build.with? "wxpython"
+    end
     enabled_components << "gr-wavelet"
     enabled_components << "gr-video-sdl" if build.with? "sdl"
     enabled_components << "gr-uhd" if build.with? "uhd"
-    enabled_components += %w[doxygen sphinx] if build.with? "documentation"
+    enabled_components << "doxygen" if build.with? "doxygen"
+    enabled_components << "sphinx" if build.with? "sphinx"
 
     enabled_components.each do |c|
       args << "-DENABLE_#{c.upcase.split("-").join("_")}=ON"
@@ -135,6 +140,79 @@ class Gnuradio < Formula
   end
 
   test do
-    assert_match version.to_s, shell_output("#{bin}/gnuradio-config-info -v").chomp
+    system("#{bin}/gnuradio-config-info -v")
+
+    (testpath/"test.c++").write <<-EOS.undent
+        #include <gnuradio/top_block.h>
+        #include <gnuradio/blocks/null_source.h>
+        #include <gnuradio/blocks/null_sink.h>
+        #include <gnuradio/blocks/head.h>
+        #include <gnuradio/gr_complex.h>
+
+        class top_block : public gr::top_block {
+        public:
+          top_block();
+        private:
+          gr::blocks::null_source::sptr null_source;
+          gr::blocks::null_sink::sptr null_sink;
+          gr::blocks::head::sptr head;
+        };
+
+        top_block::top_block() : gr::top_block("Top block") {
+          long s = sizeof(gr_complex);
+          null_source = gr::blocks::null_source::make(s);
+          null_sink = gr::blocks::null_sink::make(s);
+          head = gr::blocks::head::make(s, 1024);
+          connect(null_source, 0, head, 0);
+          connect(head, 0, null_sink, 0);
+        }
+
+        int main(int argc, char **argv) {
+          top_block top;
+          top.run();
+        }
+    EOS
+    system ENV.cxx,
+           "-lgnuradio-blocks", "-lgnuradio-runtime", "-lgnuradio-pmt",
+           "-lboost_system",
+           (testpath/"test.c++"),
+           "-o", (testpath/"test")
+    system (testpath/"test")
+
+    if build.with? "python"
+      (testpath/"test.py").write <<-EOS.undent
+        from gnuradio import blocks
+        from gnuradio import gr
+
+        class top_block(gr.top_block):
+            def __init__(self):
+                gr.top_block.__init__(self, "Top Block")
+                self.samp_rate = 32000
+                s = gr.sizeof_gr_complex
+                self.blocks_null_source_0 = blocks.null_source(s)
+                self.blocks_null_sink_0 = blocks.null_sink(s)
+                self.blocks_head_0 = blocks.head(s, 1024)
+                self.connect((self.blocks_head_0, 0),
+                             (self.blocks_null_sink_0, 0))
+                self.connect((self.blocks_null_source_0, 0),
+                             (self.blocks_head_0, 0))
+
+        def main(top_block_cls=top_block, options=None):
+            tb = top_block_cls()
+            tb.start()
+            tb.wait()
+
+        main()
+      EOS
+      system "python", (testpath/"test.py")
+
+      Dir.chdir(testpath) do
+        system "#{bin}/gr_modtool", "newmod", "test"
+        Dir.chdir("gr-test") do
+          system "#{bin}/gr_modtool", "add", "-t", "general", "test_ff", "-l",
+                 "python", "-y", "--argument-list=''", "--add-python-qa"
+        end
+      end
+    end
   end
 end
